@@ -1,5 +1,6 @@
 import os
 import pyxdf
+import mne
 from xdf2mne import stream2raw
 
 import logging
@@ -15,3 +16,8 @@ stream = streams[0]
 marker_stream = streams[1]
 
 raw, events, event_id = stream2raw(stream, marker_stream=marker_stream)
+
+print(f"raw contains the following annotations: {raw.annotations}")
+# The events array is redundant with annotations, you can do
+events_from_annotations = mne.annotations.events_from_annotations(raw, event_id)
+# and should receive the same array as events
