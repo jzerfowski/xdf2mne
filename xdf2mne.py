@@ -6,11 +6,14 @@ the timestamps for data and marker streams are synchronized and that the stream'
 nominal sampling rate exactly. Usage of pyxdf's dejitter_timestamps flag when loading the streams is recommended.
 If you recorded the data from different devices with unsynced clocks, the timestamps need to be fixed before using this.
 """
+import re
+from enum import Enum
 from typing import Union, List, Callable
 
 import numpy as np
 import mne
 import pyxdf
+import scipy.stats
 
 import utils
 
@@ -33,6 +36,35 @@ def _get_event_id(marker_stream):
     markers = np.array(marker_stream['time_series'])[:, 0]
     event_id = {name: i for i, name in enumerate(np.unique(markers))}
     return event_id
+
+
+def merge_event_ids(events: np.array, event_id: dict, regexp: str, condition_new: str):
+    """
+    Merge a set of events based on a regular expression.
+    All condition names (keys in event_id) matching regexp are merged into an event called condition_new
+     and update the corresponding event_id dictionary
+    :param events: array of events (as defined by mne, shape (n, 3))
+    :param event_id: event_id dictionary with keys conditions and values associated id's
+    :param regexp: regular expression to match condition names
+    :param condition_new: new name for the condition for which regular expression matched
+    :return: events, event_id_new
+    """
+    ids_to_merge = []
+    id_new = None
+    event_id_new = event_id.copy()
+    for condition, id in event_id.items():
+        if re.match(regexp, condition):
+            if id_new is None:
+                id_new = id
+            ids_to_merge.append(id)
+            del event_id_new[condition]
+    if id_new is not None:
+        event_id_new[condition_new] = id_new
+    # This does nothing if ids_to_merge=[] and id_new=None
+    events = mne.merge_events(events, np.asarray(ids_to_merge), id_new, replace_events=True)
+    return events, event_id_new
+
+
 
 def marker_stream2annotations(marker_stream, t_reference, t_duration=0.0):
     """
@@ -97,8 +129,8 @@ def marker_stream2events(marker_stream, t_reference, sfreq):
 #     desc = stream['info']['desc'][0]
 
 def streams2raw(data_stream: dict, marker_streams: List[dict] = None, ch_type_t: Callable = ch_type_transform_default) -> mne.io.RawArray:
-    raw = stream2raw(data_stream, ch_type_t=ch_type_t)
-    raw_add_annotations(raw, marker_streams=marker_streams)
+    raw, t_original = stream2raw(data_stream, ch_type_t=ch_type_t)
+    raw_add_annotations(raw, t_reference=t_original, marker_streams=marker_streams)
     return raw
 
 
@@ -134,20 +166,22 @@ def stream2raw(stream, ch_type_t=None) -> mne.io.RawArray:
             return ch_type_transform_default(type_, stream['info']['type'][0])
         ch_type_t = ch_type_transform
 
-    stream_type = ch_type_t(stream['info']['type'][0])
-    data = stream['time_series'].T  # Transpose to make shape (n_channels, n_times)
-
-    ch_names, ch_types = get_ch_info(stream['info'], ch_type_t=ch_type_t)
-
+    ## Prepare info structure
+    ch_names, ch_types, ch_units = get_ch_info(stream['info'], ch_type_t=ch_type_t)
     info = mne.create_info(ch_names, sfreq, ch_types)
+
+    # Prepare data by bringing units into SI units
+    data = stream['time_series'].T  # Transpose to make shape (n_channels, n_times)
+    unit_factors = np.array([1/unit_fac.value for unit_fac in ch_units])
+    data *= unit_factors[:, np.newaxis]  # Add axis for broadcasting
+
     raw = mne.io.RawArray(data=data, info=info)
-    raw._t_original = t_original
+    # raw._t_original = t_original
 
-    return raw
+    return raw, t_original
 
 
-def raw_add_annotations(raw: mne.io.RawArray, marker_streams=None) -> mne.io.RawArray:
-    t_reference = raw._t_original
+def raw_add_annotations(raw: mne.io.RawArray, t_reference, marker_streams=None) -> mne.io.RawArray:
     if marker_streams:
         for stream in marker_streams:
             annotations = marker_stream2annotations(stream, t_reference=t_reference)
@@ -156,9 +190,30 @@ def raw_add_annotations(raw: mne.io.RawArray, marker_streams=None) -> mne.io.Raw
     return raw
 
 
+class Unit_Factor(Enum):
+    """
+    Represent common orders of magnitude and their factors relative to SI unit Tesla
+    """
+    ONE = 1
+
+    T = 1  # Tesla
+    mT = 1E3  # milliTesla
+    uT = 1E6  # microTesla
+    nT = 1E9  # nanoTesla
+    pT = 1E12  # picoTesla
+    fT = 1E15  # femtoTesla
+
+    V = 1  # Volt
+    mV = 1E3  # milliVolt
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.ONE
+
 def get_ch_info(info, ch_type_t=ch_type_transform_default):
     ch_names = []
     ch_types = []
+    ch_units = []
 
     channel_count = int(info['channel_count'][0])
 
@@ -173,8 +228,14 @@ def get_ch_info(info, ch_type_t=ch_type_transform_default):
                     if 'type' in channel:
                         ch_types.append(ch_type_t(channel['type'][0]))
                     else:
-                        logger.warning(f"Channel {ch_label} is missing a type")
+                        logger.info(f"Channel {ch_label} is missing a type")
                         ch_types.append(ch_type_t())
+
+                    if 'unit' in channel:
+                        ch_units.append(Unit_Factor[channel['unit'][0]])
+                    else:
+                        ch_units.append(Unit_Factor.ONE)
+
                 else:
                     break
                     # If a channel has no label, the "channels" structure seems corrupted and we use fallback to defaults
@@ -184,8 +245,10 @@ def get_ch_info(info, ch_type_t=ch_type_transform_default):
                        f"Resorting to enumeration of channels and default type {ch_type_t()}")
         ch_names = [f'channel{i:0{np.ceil(np.log10(channel_count)).astype(int)}}' for i in range(channel_count)]
         ch_types = [ch_type_t()]*channel_count
+        ch_units = [Unit_Factor.ONE] * channel_count
 
-    return ch_names, ch_types
+
+    return ch_names, ch_types, ch_units
 
 
 def streams2dict(streams_list, header=None, return_header=False):
@@ -197,3 +260,96 @@ def streams2dict(streams_list, header=None, return_header=False):
         return streams, header
     else:
         return streams
+
+def merge_overlapping_annotations(annotations: mne.Annotations):
+    """
+    Merge annotations whose duration overlaps with a previous annotation into one with longer duration
+    Keeps the first description of overlapping annotations
+    :param annotations: mne.Annotations object
+    :return: merged annotations
+    """
+    if not len(annotations) >= 1:
+        return annotations.copy()
+
+    annotation_last = annotations[0].copy()
+    annotations_stack = [annotation_last]
+    for annotation in annotations[1:]:
+        overlap = annotation_last['onset'] + annotation_last['duration'] - annotation['onset']
+        if overlap > 0:
+            # they overlap:
+            annotation_last['duration'] += annotation['duration'] - overlap
+        else:
+            annotation_last = annotation.copy()
+            annotations_stack.append(annotation_last)
+            # annotation_last = annotation.copy()
+
+    annotations_merged = mne.Annotations(*np.array([(ann['onset'], ann['duration'], ann['description']) for ann in annotations_stack]).T)
+    return annotations_merged
+
+
+def get_nonlinear_annotations(raw: mne.io.RawArray, threshold: float, duration_threshold_exceeded: float, picks=None, description: str = "BAD_RAILING"):
+    def mask_func(data):
+        return np.any(np.abs(data) > threshold, axis=0)
+    return get_mask_annotations(raw=raw, mask_func=mask_func, description=description, duration_threshold_exceeded=duration_threshold_exceeded, picks=picks)
+
+
+def get_variance_annotations(raw: mne.io.RawArray, zscore_threshold: float, duration_threshold_exceeded: float, picks=None, description: str = "BAD_VARIANCE"):
+    """
+    Return annotations for datapoints whose z-score exceeds zscore_threshold. Computed for each channel separately, add annotation if any channel exceeds the threshold
+    :param raw:
+    :param zscore_threshold:
+    :param duration_threshold_exceeded:
+    :param picks:
+    :param description:
+    :return:
+    """
+    def zscore_func(data):
+        # (n_channels, n_samples)
+        zscore = scipy.stats.zscore(data, axis=1)
+        return np.any(np.abs(zscore) > zscore_threshold, axis=0)
+    return get_mask_annotations(raw, mask_func=zscore_func, description=description, duration_threshold_exceeded=duration_threshold_exceeded, picks=picks)
+
+
+def get_mask_annotations(raw: mne.io.RawArray, mask_func, description: str, duration_threshold_exceeded: float, picks=None) -> mne.Annotations:
+    """
+    Annotate data which exceeds the threshold (both pos and neg)
+    This can be used to find periods in which sensors leave their linear range
+    :param raw: raw array whose data should be analyzed and annotated. Annotations are added in place
+    :param duration_threshold_exceeded: duration of data to discard around exceeded threshold (1/2 pre, 1/2 post)
+    :param picks: picks as used by RawArray.get_data()
+    :param description: description of annotation to be used for exceeding threshold
+    :return: returns instance of mne.Annotations
+    """
+
+    data, times = raw.get_data(picks=picks, return_times=True, reject_by_annotation=None)
+    mask_threshold_exceeded = mask_func(data)
+    # mask_threshold_exceeded = np.max(np.abs(data), axis=0) > threshold
+
+    annotations = mne.Annotations([], [], [])
+
+    onset = None
+    for t, exceeded in zip(times, mask_threshold_exceeded):
+        if exceeded and onset is None:
+            onset = t
+        elif not exceeded and onset is not None and onset + duration_threshold_exceeded > t:
+            # this is still in the range to be discarded
+            pass
+        elif not exceeded and onset is not None:
+            # the range to be discarded ended
+            annotations += mne.Annotations(onset - duration_threshold_exceeded / 2,
+                                           t - onset + duration_threshold_exceeded, description)
+            onset = None
+        else:
+            pass
+
+    # If after the last sample we still exceeded the mask
+    if onset is not None:
+        annotations += mne.Annotations(onset - duration_threshold_exceeded / 2, t - onset + duration_threshold_exceeded, description)
+
+    if np.sum(annotations.duration) > 0:
+        logger.warning(
+            f"Found {np.sum(annotations.duration):.3f} s of '{description}' data derived from the mask")
+    else:
+        logger.info(f"No data matching the mask function found")
+
+    return annotations
