@@ -8,19 +8,17 @@ If you recorded the data from different devices with unsynced clocks, the timest
 """
 import re
 from enum import Enum
-from typing import Union, List, Callable
+from typing import List, Callable
 
 import numpy as np
 import mne
-import pyxdf
 import scipy.stats
-
-import utils
 
 import logging
 logger = logging.getLogger(__name__)
 
 CH_TYPE_DEFAULT = 'misc'
+
 
 def ch_type_transform_default(type_=None, default_type=CH_TYPE_DEFAULT):
     if default_type is None or default_type not in mne.io.pick.get_channel_type_constants():
@@ -31,6 +29,7 @@ def ch_type_transform_default(type_=None, default_type=CH_TYPE_DEFAULT):
 
     type_ = str(type_).lower()
     return type_ if type_ in mne.io.pick.get_channel_type_constants() else default_type
+
 
 def _get_event_id(marker_stream):
     markers = np.array(marker_stream['time_series'])[:, 0]
@@ -119,20 +118,10 @@ def marker_stream2events(marker_stream, t_reference, sfreq):
     return events, event_id
 
 
-# def stream2raw(stream, ch_type_t=ch_type_transform_default):
-#     t_original = stream['time_stamps']
-#     sfreq_nominal = np.float(stream['info']['nominal_srate'][0])
-#     stream_type = ch_type_t(stream['info']['type'])
-#     data = stream['time_series'].T  # Transpose for shape (n_channels, n_times)
-#     n_channels, n_samples = data.shape
-#
-#     desc = stream['info']['desc'][0]
-
 def streams2raw(data_stream: dict, marker_streams: List[dict] = None, ch_type_t: Callable = ch_type_transform_default) -> mne.io.RawArray:
     raw, t_original = stream2raw(data_stream, ch_type_t=ch_type_t)
     raw_add_annotations(raw, t_reference=t_original, marker_streams=marker_streams)
     return raw
-
 
 
 def stream2raw(stream, ch_type_t=None) -> mne.io.RawArray:
@@ -149,7 +138,6 @@ def stream2raw(stream, ch_type_t=None) -> mne.io.RawArray:
     - events: None if no marker stream given, otherwise numpy array with shape (3, n_events) as expected by mne
     - event_id: dictionary that maps the marker values (from marker_stream channel 0) to events
     """
-
 
     # Extract information from stream
     t_original = stream['time_stamps']
@@ -210,6 +198,7 @@ class Unit_Factor(Enum):
     def _missing_(cls, value):
         return cls.ONE
 
+
 def get_ch_info(info, ch_type_t=ch_type_transform_default):
     ch_names = []
     ch_types = []
@@ -247,7 +236,6 @@ def get_ch_info(info, ch_type_t=ch_type_transform_default):
         ch_types = [ch_type_t()]*channel_count
         ch_units = [Unit_Factor.ONE] * channel_count
 
-
     return ch_names, ch_types, ch_units
 
 
@@ -260,6 +248,7 @@ def streams2dict(streams_list, header=None, return_header=False):
         return streams, header
     else:
         return streams
+
 
 def merge_overlapping_annotations(annotations: mne.Annotations):
     """
@@ -323,7 +312,6 @@ def get_mask_annotations(raw: mne.io.RawArray, mask_func, description: str, dura
 
     data, times = raw.get_data(picks=picks, return_times=True, reject_by_annotation=None)
     mask_threshold_exceeded = mask_func(data)
-    # mask_threshold_exceeded = np.max(np.abs(data), axis=0) > threshold
 
     annotations = mne.Annotations([], [], [])
 
