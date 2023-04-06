@@ -141,7 +141,7 @@ def stream2raw(stream, ch_type_t=None) -> mne.io.RawArray:
 
     # Extract information from stream
     t_original = stream['time_stamps']
-    sfreq = np.float(stream['info']['nominal_srate'][0])
+    sfreq = float(stream['info']['nominal_srate'][0])
 
     if sfreq <= 0:
         n_samples = len(stream['time_stamps'])
