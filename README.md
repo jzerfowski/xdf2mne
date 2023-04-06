@@ -1,6 +1,6 @@
 # xdf2mne
 A small tool to transform time series data from a .xdf-file into mne's RawArray data structure.
-To find out how to use, take a look at [example.py](xdf2mne/example.py) and the comments in [xdf2mne.py](xdf2mne/xdf2mne.py).
+To find out how to use, take a look at [example.py](example.py) and the comments in [xdf2mne.py](xdf2mne/xdf2mne.py).
 
 Requirements as to sampling rate steadiness and other things are also pointed out in the code comments. 
 
