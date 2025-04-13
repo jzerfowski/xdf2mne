@@ -21,14 +21,14 @@ CH_TYPE_DEFAULT = 'misc'
 
 
 def ch_type_transform_default(type_=None, default_type=CH_TYPE_DEFAULT):
-    if default_type is None or default_type not in mne.io.pick.get_channel_type_constants():
+    if default_type is None or default_type not in mne.io.get_channel_type_constants():
         default_type = CH_TYPE_DEFAULT
 
     if type_ is None:
         return default_type
 
     type_ = str(type_).lower()
-    return type_ if type_ in mne.io.pick.get_channel_type_constants() else default_type
+    return type_ if type_ in mne.io.get_channel_type_constants() else default_type
 
 
 def _get_event_id(marker_stream):
